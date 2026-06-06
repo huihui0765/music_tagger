@@ -13,13 +13,9 @@ import re
 import time
 import argparse
 import mutagen
-from mutagen.flac import FLAC
-from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TRCK, TXXX
-from mutagen.mp3 import MP3
-from mutagen.mp4 import MP4, MP4Tags
 import requests
 
-from common import has_mbid, AUDIO_EXTS, log, log_verbose, set_log_file
+from common import has_mbid, AUDIO_EXTS, log, log_verbose, set_log_file, write_tags
 
 MB_BASE = "https://musicbrainz.org/ws/2"
 HEADERS = {"User-Agent": "music-tagger/1.0 (https://github.com/user/music-tagger)"}
@@ -101,73 +97,6 @@ def get_title_from_filename(filename):
 
 
 
-def update_flac_tags(filepath, track_info, release_info):
-    f = FLAC(filepath)
-    if f.tags is None:
-        f.add_vorbis_comment()
-    artist_credit = release_info.get("artist-credit", [{}])
-    artist_name = artist_credit[0].get("name", "") if artist_credit else ""
-    f.tags["title"] = track_info.get("title", "")
-    f.tags["artist"] = artist_name
-    f.tags["album"] = release_info.get("title", "")
-    f.tags["date"] = release_info.get("date", "")
-    f.tags["tracknumber"] = str(track_info.get("number", ""))
-    f.tags["musicbrainz_trackid"] = track_info.get("id", "")
-    f.tags["musicbrainz_albumid"] = release_info.get("id", "")
-    f.save()
-
-
-def update_mp3_tags(filepath, track_info, release_info):
-    try:
-        audio = MP3(filepath, ID3=ID3)
-    except Exception:
-        audio = MP3(filepath)
-        audio.add_tags()
-    artist_credit = release_info.get("artist-credit", [{}])
-    artist_name = artist_credit[0].get("name", "") if artist_credit else ""
-    audio.tags.delall("TIT2")
-    audio.tags.add(TIT2(encoding=3, text=track_info.get("title", "")))
-    audio.tags.delall("TPE1")
-    audio.tags.add(TPE1(encoding=3, text=artist_name))
-    audio.tags.delall("TALB")
-    audio.tags.add(TALB(encoding=3, text=release_info.get("title", "")))
-    audio.tags.delall("TDRC")
-    audio.tags.add(TDRC(encoding=3, text=release_info.get("date", "")))
-    audio.tags.delall("TRCK")
-    audio.tags.add(TRCK(encoding=3, text=str(track_info.get("number", ""))))
-    # MusicBrainz ID 写入 TXXX 帧
-    if track_info.get("id"):
-        audio.tags.delall("TXXX:MusicBrainz Track Id")
-        audio.tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=track_info["id"]))
-    if release_info.get("id"):
-        audio.tags.delall("TXXX:MusicBrainz Album Id")
-        audio.tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=release_info["id"]))
-    audio.save()
-
-
-def update_m4a_tags(filepath, track_info, release_info):
-    audio = MP4(filepath)
-    if audio.tags is None:
-        audio.add_tags()
-    artist_credit = release_info.get("artist-credit", [{}])
-    artist_name = artist_credit[0].get("name", "") if artist_credit else ""
-    audio.tags["\xa9nam"] = [track_info.get("title", "")]
-    audio.tags["\xa9ART"] = [artist_name]
-    audio.tags["\xa9alb"] = [release_info.get("title", "")]
-    if release_info.get("date"):
-        audio.tags["\xa9day"] = [release_info["date"]]
-    if track_info.get("number"):
-        try:
-            audio.tags["trkn"] = [(int(str(track_info["number"]).split("/")[0]), 0)]
-        except (ValueError, AttributeError):
-            pass
-    if track_info.get("id"):
-        audio.tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [track_info["id"].encode()]
-    if release_info.get("id"):
-        audio.tags["----:com.apple.iTunes:MusicBrainz Album Id"] = [release_info["id"].encode()]
-    audio.save()
-
-
 def match_tracks_to_release(files, release):
     media = release.get("media", [])
     if not media:
@@ -245,31 +174,31 @@ def process_album(artist_folder, album_folder, files, artist_map):
         return 0, "release_error"
 
     matches = match_tracks_to_release(files, release_detail)
+    artist_credit = release_detail.get("artist-credit", [{}])
+    artist_name = artist_credit[0].get("name", "") if artist_credit else ""
+    album_name = release_detail.get("title", "")
+    album_date = release_detail.get("date", "")
+    album_id = release_detail.get("id", "")
+
     updated = 0
     for fpath, track_info in matches.items():
         fname = os.path.basename(fpath)
         if _config.get("dry_run"):
-            title = track_info.get("title", "?")
-            artist_credit = release_detail.get("artist-credit", [{}])
-            artist = artist_credit[0].get("name", "") if artist_credit else ""
-            album = release_detail.get("title", "?")
-            log(f"  [DRY-RUN] {fname} -> {artist} - {title} [{album}]")
+            log(f"  [DRY-RUN] {fname} -> {artist_name} - {track_info.get('title', '?')} [{album_name}]")
             updated += 1
             continue
-        try:
-            ext = os.path.splitext(fpath)[1].lower()
-            if ext == ".flac":
-                update_flac_tags(fpath, track_info, release_detail)
-            elif ext == ".mp3":
-                update_mp3_tags(fpath, track_info, release_detail)
-            elif ext == ".m4a":
-                update_m4a_tags(fpath, track_info, release_detail)
-            else:
-                log(f"  跳过不支持的格式: {fname}")
-                continue
+        ok = write_tags(
+            fpath,
+            title=track_info.get("title"),
+            artist=artist_name,
+            album=album_name,
+            date=album_date,
+            tracknumber=track_info.get("number"),
+            mb_track_id=track_info.get("id"),
+            mb_album_id=album_id,
+        )
+        if ok:
             updated += 1
-        except Exception as e:
-            log(f"  ERR updating {fname}: {e}")
     return updated, "ok"
 
 

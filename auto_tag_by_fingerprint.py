@@ -18,15 +18,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import mutagen
-from mutagen.flac import FLAC
-from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TRCK, TXXX
-from mutagen.mp3 import MP3
-from mutagen.mp4 import MP4, MP4Tags
 import requests
 
 from common import (
     has_mbid, AUDIO_EXTS, log, log_verbose, ProgressBar,
-    load_progress, save_progress, mark_done, set_log_file,
+    load_progress, save_progress, mark_done, set_log_file, write_tags,
 )
 
 DEFAULT_ACOUSTID_KEY = "1vOwZtEn"
@@ -191,89 +187,22 @@ def _get_track_number_from_mb(release_id, recording_id):
 
 
 def update_tags(filepath, match):
-    """写入标签"""
-    ext = os.path.splitext(filepath)[1].lower()
-    title = match.get("recording_title", "")
-    artist = ", ".join(a.get("name", "") for a in match.get("artists", []))
+    """写入标签（调用 common.write_tags）"""
     release = match.get("release", {})
-    album = release.get("title", "")
-    date = release.get("date", "")
     track_num = ""
-
     if release.get("id"):
         track_num = _get_track_number_from_mb(release["id"], match.get("recording_id", ""))
 
-    try:
-        if ext == ".flac":
-            f = FLAC(filepath)
-            if f.tags is None:
-                f.add_vorbis_comment()
-            f.tags["title"] = title
-            f.tags["artist"] = artist
-            f.tags["album"] = album
-            if date:
-                f.tags["date"] = date
-            if track_num:
-                f.tags["tracknumber"] = track_num
-            if match.get("recording_id"):
-                f.tags["musicbrainz_trackid"] = match["recording_id"]
-            if release.get("id"):
-                f.tags["musicbrainz_albumid"] = release["id"]
-            f.save()
-
-        elif ext == ".mp3":
-            try:
-                audio = MP3(filepath, ID3=ID3)
-            except Exception:
-                audio = MP3(filepath)
-                audio.add_tags()
-            audio.tags.delall("TIT2")
-            audio.tags.add(TIT2(encoding=3, text=title))
-            audio.tags.delall("TPE1")
-            audio.tags.add(TPE1(encoding=3, text=artist))
-            audio.tags.delall("TALB")
-            audio.tags.add(TALB(encoding=3, text=album))
-            if date:
-                audio.tags.delall("TDRC")
-                audio.tags.add(TDRC(encoding=3, text=date))
-            if track_num:
-                audio.tags.delall("TRCK")
-                audio.tags.add(TRCK(encoding=3, text=track_num))
-            if match.get("recording_id"):
-                audio.tags.delall("TXXX:MusicBrainz Track Id")
-                audio.tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=match["recording_id"]))
-            if release.get("id"):
-                audio.tags.delall("TXXX:MusicBrainz Album Id")
-                audio.tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=release["id"]))
-            audio.save()
-
-        elif ext == ".m4a":
-            audio = MP4(filepath)
-            if audio.tags is None:
-                audio.add_tags()
-            audio.tags["\xa9nam"] = [title]
-            audio.tags["\xa9ART"] = [artist]
-            audio.tags["\xa9alb"] = [album]
-            if date:
-                audio.tags["\xa9day"] = [date]
-            if track_num:
-                try:
-                    audio.tags["trkn"] = [(int(track_num.split("/")[0]), 0)]
-                except (ValueError, AttributeError):
-                    pass
-            if match.get("recording_id"):
-                audio.tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [match["recording_id"].encode()]
-            if release.get("id"):
-                audio.tags["----:com.apple.iTunes:MusicBrainz Album Id"] = [release["id"].encode()]
-            audio.save()
-
-        else:
-            return False
-
-        return True
-    except Exception as e:
-        log(f"  标签写入错误: {e}")
-        return False
+    return write_tags(
+        filepath,
+        title=match.get("recording_title"),
+        artist=", ".join(a.get("name", "") for a in match.get("artists", [])),
+        album=release.get("title"),
+        date=release.get("date"),
+        tracknumber=track_num or None,
+        mb_track_id=match.get("recording_id"),
+        mb_album_id=release.get("id"),
+    )
 
 
 def _collect_files(music_root, resume_set):

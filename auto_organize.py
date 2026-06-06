@@ -23,12 +23,8 @@ import argparse
 from collections import defaultdict
 
 import mutagen
-from mutagen.flac import FLAC, Picture
-from mutagen.id3 import ID3, APIC, TIT2, TPE1, TALB, TDRC, TRCK, TXXX
-from mutagen.mp3 import MP3
-from mutagen.mp4 import MP4, MP4Tags
 
-from common import AUDIO_EXTS, log, log_verbose, set_log_file
+from common import AUDIO_EXTS, log, log_verbose, set_log_file, write_tags
 
 # 全局配置
 _config = {"dry_run": False, "quiet": False, "verbose": False, "noise_dir": ""}
@@ -260,12 +256,11 @@ def embed_covers(root):
                 cover_file = os.path.join(dirpath, f)
                 break
             if fl.endswith((".jpg", ".png")) and not cover_file:
-                cover_file = os.path.join(dirpath, f)  # 兜底: 用第一张图
+                cover_file = os.path.join(dirpath, f)
 
         if not cover_file:
             continue
 
-        # 读取图片
         try:
             with open(cover_file, "rb") as f:
                 img_data = f.read()
@@ -285,49 +280,27 @@ def embed_covers(root):
                 af = mutagen.File(fp, easy=False)
                 if af is None:
                     continue
-
                 has_cover = False
-                if isinstance(af, FLAC):
+                if isinstance(af, mutagen.flac.FLAC):
                     has_cover = any(p.type == 3 for p in af.pictures)
-                elif isinstance(af, MP3):
+                elif isinstance(af, mutagen.id3.ID3):
                     has_cover = any(k.startswith("APIC") for k in af.tags) if af.tags else False
-                elif isinstance(af, MP4):
+                elif isinstance(af, mutagen.mp4.MP4):
                     has_cover = "covr" in af.tags if af.tags else False
-
                 if has_cover:
-                    log_verbose(f"  {f}: 已有封面，跳过")
                     continue
+            except Exception:
+                continue
 
-                if _config.get("dry_run"):
-                    log(f"  [COVER] {f}")
-                    embedded += 1
-                    continue
-
-                if isinstance(af, FLAC):
-                    pic = Picture()
-                    pic.type = 3  # front cover
-                    pic.mime = mime
-                    pic.data = img_data
-                    af.add_picture(pic)
-                    af.save()
-                elif isinstance(af, MP3):
-                    if af.tags is None:
-                        af.add_tags()
-                    af.tags.add(APIC(encoding=3, mime=mime, type=3, data=img_data))
-                    af.save()
-                elif isinstance(af, MP4):
-                    if af.tags is None:
-                        af.add_tags()
-                    from mutagen.mp4 import MP4Cover
-                    fmt = MP4Cover.FORMAT_JPEG if mime == "image/jpeg" else MP4Cover.FORMAT_PNG
-                    af.tags["covr"] = [MP4Cover(img_data, fmt)]
-                    af.save()
-
+            if _config.get("dry_run"):
                 log(f"  [COVER] {f}")
                 embedded += 1
+                continue
 
-            except Exception as e:
-                log_verbose(f"  {f}: 嵌入失败 {e}")
+            ok = write_tags(fp, cover_data=img_data, cover_mime=mime)
+            if ok:
+                log(f"  [COVER] {f}")
+                embedded += 1
 
     log(f"  嵌入 {embedded} 个文件")
     return embedded

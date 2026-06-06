@@ -197,6 +197,150 @@ def sanitize_filename(name):
     return re.sub(r'[<>:"/\\|?*]', '', name).strip()
 
 
+# ==================== 标签写入 ====================
+
+def write_tags(filepath, title=None, artist=None, album=None,
+               date=None, tracknumber=None, mb_track_id=None, mb_album_id=None,
+               cover_data=None, cover_mime=None):
+    """
+    统一写入音频标签。支持 .flac / .mp3 / .m4a。
+    只写入非 None 的字段。
+    """
+    ext = os.path.splitext(filepath)[1].lower()
+    try:
+        if ext == ".flac":
+            _write_flac(filepath, title, artist, album, date,
+                        tracknumber, mb_track_id, mb_album_id,
+                        cover_data, cover_mime)
+        elif ext == ".mp3":
+            _write_mp3(filepath, title, artist, album, date,
+                       tracknumber, mb_track_id, mb_album_id,
+                       cover_data, cover_mime)
+        elif ext == ".m4a":
+            _write_m4a(filepath, title, artist, album, date,
+                       tracknumber, mb_track_id, mb_album_id,
+                       cover_data, cover_mime)
+        else:
+            return False
+        return True
+    except Exception as e:
+        log(f"  标签写入错误 {os.path.basename(filepath)}: {e}")
+        return False
+
+
+def _write_flac(filepath, title, artist, album, date, tracknumber,
+                mb_track_id, mb_album_id, cover_data, cover_mime):
+    from mutagen.flac import FLAC, Picture
+    f = FLAC(filepath)
+    if f.tags is None:
+        f.add_vorbis_comment()
+    if title is not None:
+        f.tags["title"] = title
+    if artist is not None:
+        f.tags["artist"] = artist
+    if album is not None:
+        f.tags["album"] = album
+    if date is not None:
+        f.tags["date"] = date
+    if tracknumber is not None:
+        f.tags["tracknumber"] = str(tracknumber)
+    if mb_track_id is not None:
+        f.tags["musicbrainz_trackid"] = mb_track_id
+    if mb_album_id is not None:
+        f.tags["musicbrainz_albumid"] = mb_album_id
+    if cover_data is not None:
+        pic = Picture()
+        pic.type = 3  # front cover
+        pic.mime = cover_mime or "image/jpeg"
+        pic.data = cover_data
+        f.clear_pictures()
+        f.add_picture(pic)
+    f.save()
+
+
+def _write_mp3(filepath, title, artist, album, date, tracknumber,
+               mb_track_id, mb_album_id, cover_data, cover_mime):
+    from mutagen.mp3 import MP3
+    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TRCK, TXXX, APIC
+    try:
+        audio = MP3(filepath, ID3=ID3)
+    except Exception:
+        audio = MP3(filepath)
+        audio.add_tags()
+    if title is not None:
+        audio.tags.delall("TIT2")
+        audio.tags.add(TIT2(encoding=3, text=title))
+    if artist is not None:
+        audio.tags.delall("TPE1")
+        audio.tags.add(TPE1(encoding=3, text=artist))
+    if album is not None:
+        audio.tags.delall("TALB")
+        audio.tags.add(TALB(encoding=3, text=album))
+    if date is not None:
+        audio.tags.delall("TDRC")
+        audio.tags.add(TDRC(encoding=3, text=date))
+    if tracknumber is not None:
+        audio.tags.delall("TRCK")
+        audio.tags.add(TRCK(encoding=3, text=str(tracknumber)))
+    if mb_track_id is not None:
+        audio.tags.delall("TXXX:MusicBrainz Track Id")
+        audio.tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=mb_track_id))
+    if mb_album_id is not None:
+        audio.tags.delall("TXXX:MusicBrainz Album Id")
+        audio.tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=mb_album_id))
+    if cover_data is not None:
+        audio.tags.delall("APIC")
+        audio.tags.add(APIC(encoding=3, mime=cover_mime or "image/jpeg",
+                            type=3, data=cover_data))
+    audio.save()
+
+
+def _write_m4a(filepath, title, artist, album, date, tracknumber,
+               mb_track_id, mb_album_id, cover_data, cover_mime):
+    from mutagen.mp4 import MP4, MP4Cover
+    audio = MP4(filepath)
+    if audio.tags is None:
+        audio.add_tags()
+    if title is not None:
+        audio.tags["\xa9nam"] = [title]
+    if artist is not None:
+        audio.tags["\xa9ART"] = [artist]
+    if album is not None:
+        audio.tags["\xa9alb"] = [album]
+    if date is not None:
+        audio.tags["\xa9day"] = [date]
+    if tracknumber is not None:
+        try:
+            audio.tags["trkn"] = [(int(str(tracknumber).split("/")[0]), 0)]
+        except (ValueError, AttributeError):
+            pass
+    if mb_track_id is not None:
+        audio.tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [mb_track_id.encode()]
+    if mb_album_id is not None:
+        audio.tags["----:com.apple.iTunes:MusicBrainz Album Id"] = [mb_album_id.encode()]
+    if cover_data is not None:
+        fmt = MP4Cover.FORMAT_JPEG if (cover_mime or "image/jpeg") == "image/jpeg" else MP4Cover.FORMAT_PNG
+        audio.tags["covr"] = [MP4Cover(cover_data, imageformat=fmt)]
+    audio.save()
+
+
+def read_tags(filepath):
+    """读取音频文件的基本标签"""
+    try:
+        f = mutagen.File(filepath, easy=True)
+        if f is None:
+            return {}
+        return {
+            "title": (f.get("title") or [None])[0],
+            "artist": (f.get("artist") or [None])[0],
+            "album": (f.get("album") or [None])[0],
+            "date": (f.get("date") or [None])[0],
+            "tracknumber": (f.get("tracknumber") or [None])[0],
+        }
+    except Exception:
+        return {}
+
+
 # ==================== 断点续跑 ====================
 
 def load_progress(progress_file):
