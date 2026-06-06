@@ -41,7 +41,7 @@ _rate_lock = threading.Lock()
 _request_times = []
 
 
-def rate_limit(max_per_sec=3):
+def rate_limit(max_per_sec=2):
     """确保请求不超过 max_per_sec 次/秒"""
     with _rate_lock:
         now = time.time()
@@ -100,7 +100,7 @@ def get_fingerprint(filepath):
 def _acoustid_post(duration, fingerprint, retries=3):
     """带重试的 AcoustID 查询"""
     for attempt in range(retries):
-        rate_limit(max_per_sec=3)
+        rate_limit(max_per_sec=2)
         try:
             r = requests.post("https://api.acoustid.org/v2/lookup", data={
                 "client": _config["acoustid_key"],
@@ -114,15 +114,20 @@ def _acoustid_post(duration, fingerprint, retries=3):
                 if data.get("status") == "ok":
                     return data.get("results", [])
             elif r.status_code == 429:
-                wait = 5 * (attempt + 1)
+                wait = 2 ** (attempt + 2)  # 4, 8, 16 秒
                 log(f"  AcoustID 限流，等待 {wait} 秒...")
                 time.sleep(wait)
                 continue
             return []
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             if attempt < retries - 1:
-                time.sleep(2)
+                time.sleep(3)
     return []
+
+
+def lookup_acoustid(duration, fingerprint):
+    """查询 AcoustID"""
+    return _acoustid_post(duration, fingerprint)
 
 
 def _mb_get(url, params, retries=3):
@@ -143,6 +148,17 @@ def _mb_get(url, params, retries=3):
     return None
 
 
+def _extract_releases(rec):
+    """从 recording 中提取 releases（兼容 releasegroups 嵌套结构）"""
+    releases = rec.get("releases", [])
+    if not releases:
+        for rg in rec.get("releasegroups", []):
+            releases = rg.get("releases", [])
+            if releases:
+                break
+    return releases
+
+
 def get_best_match(results):
     """从 AcoustID 结果中选最佳匹配"""
     for r in results:
@@ -152,7 +168,7 @@ def get_best_match(results):
         if not recordings:
             continue
         for rec in recordings:
-            releases = rec.get("releases", [])
+            releases = _extract_releases(rec)
             if releases:
                 return {
                     "recording_id": rec.get("id"),
@@ -167,7 +183,7 @@ def get_best_match(results):
         recordings = r.get("recordings", [])
         if recordings:
             rec = recordings[0]
-            releases = rec.get("releases", [])
+            releases = _extract_releases(rec)
             return {
                 "recording_id": rec.get("id"),
                 "recording_title": rec.get("title"),
@@ -210,41 +226,54 @@ def update_tags(filepath, match):
     )
 
 
-def _collect_files(music_root, resume_set):
-    """扫描目录，收集需要处理的文件"""
-    files = []
-    try:
-        artist_dirs = sorted(os.listdir(music_root))
-    except PermissionError:
-        log(f"警告: 无权限读取 {music_root}")
-        return files
+def process_one(args):
+    """处理单个文件"""
+    i, total, artist_dir, album_dir, fname, fpath = args
 
-    for artist_dir in artist_dirs:
-        artist_path = os.path.join(music_root, artist_dir)
-        if not os.path.isdir(artist_path) or artist_dir.startswith("_"):
-            continue
-        try:
-            album_dirs = sorted(os.listdir(artist_path))
-        except PermissionError:
-            log(f"警告: 无权限读取 {artist_path}")
-            continue
-        for album_dir in album_dirs:
-            album_path = os.path.join(artist_path, album_dir)
-            if not os.path.isdir(album_path):
+    duration, fp = get_fingerprint(fpath)
+    if not fp:
+        return ("skip", f"  {artist_dir}/{fname} - 指纹生成失败")
+
+    results = lookup_acoustid(duration, fp)
+    if not results:
+        return ("fail", f"  {artist_dir}/{fname} - 未匹配")
+
+    match = get_best_match(results)
+    if not match:
+        return ("fail", f"  {artist_dir}/{fname} - 置信度太低")
+
+    score = match.get("score", 0)
+    title = match.get("recording_title", "?")
+    artist = ", ".join(a.get("name", "") for a in match.get("artists", []))
+
+    if _config.get("dry_run"):
+        return ("match", f"  {artist_dir}/{fname} -> ({score:.0%}) {artist} - {title}")
+
+    if update_tags(fpath, match):
+        return ("match", f"  {artist_dir}/{fname} -> ({score:.0%}) {artist} - {title}")
+    else:
+        return ("fail", f"  {artist_dir}/{fname} - 标签写入失败")
+
+
+def _collect_files(music_root, resume_set):
+    """扫描目录，收集需要处理的文件。支持任意层级目录结构。"""
+    files = []
+    for root, dirs, fnames in os.walk(music_root):
+        dirs[:] = [d for d in dirs if not d.startswith("_")]
+        rel = os.path.relpath(root, music_root)
+        parts = rel.split(os.sep) if rel != "." else []
+        artist_dir = parts[0] if len(parts) >= 1 else ""
+        album_dir = parts[1] if len(parts) >= 2 else ""
+
+        for fname in fnames:
+            if not fname.lower().endswith(AUDIO_EXTS):
                 continue
-            try:
-                fnames = os.listdir(album_path)
-            except PermissionError:
-                log(f"警告: 无权限读取 {album_path}")
+            fpath = os.path.join(root, fname)
+            if has_mbid(fpath):
                 continue
-            for fname in fnames:
-                if fname.lower().endswith(AUDIO_EXTS):
-                    fpath = os.path.join(album_path, fname)
-                    if has_mbid(fpath):
-                        continue
-                    if os.path.abspath(fpath) in resume_set:
-                        continue
-                    files.append((artist_dir, album_dir, fname, fpath))
+            if os.path.abspath(fpath) in resume_set:
+                continue
+            files.append((artist_dir, album_dir, fname, fpath))
     return files
 
 

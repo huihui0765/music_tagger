@@ -187,6 +187,25 @@ def has_mbid(filepath):
 
 # ==================== 标签写入 ====================
 
+def _normalize_date(date):
+    """将各种日期格式统一为字符串"""
+    if date is None:
+        return None
+    if isinstance(date, str):
+        return date
+    if isinstance(date, dict):
+        year = date.get("year", "")
+        month = date.get("month", "")
+        day = date.get("day", "")
+        if year and month and day:
+            return f"{year}-{month:02d}-{day:02d}"
+        elif year and month:
+            return f"{year}-{month:02d}"
+        elif year:
+            return str(year)
+    return str(date)
+
+
 def write_tags(filepath, title=None, artist=None, album=None,
                date=None, tracknumber=None, mb_track_id=None, mb_album_id=None,
                cover_data=None, cover_mime=None):
@@ -194,6 +213,7 @@ def write_tags(filepath, title=None, artist=None, album=None,
     统一写入音频标签。支持 .flac / .mp3 / .m4a。
     只写入非 None 的字段。
     """
+    date = _normalize_date(date)
     ext = os.path.splitext(filepath)[1].lower()
     try:
         if ext == ".flac":
