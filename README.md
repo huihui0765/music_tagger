@@ -163,7 +163,9 @@ cp artists.example.yaml artists.yaml
   - "Jay Chou"
 ```
 
-脚本会依次尝试每个关键词，直到在 MusicBrainz 上找到匹配。不指定 `--artist-map` 时用文件夹名直接搜。
+脚本会依次尝试每个关键词，直到在 MusicBrainz 上找到匹配。
+
+不指定 `--artist-map` 时，脚本会用文件夹名作为歌手名直接搜索 MusicBrainz（支持简繁中文和英文名）。如果搜索结果不理想，再用 `--artist-map` 精确指定。
 
 ## 支持的格式
 

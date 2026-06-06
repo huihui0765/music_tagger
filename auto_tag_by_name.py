@@ -12,10 +12,9 @@ import os
 import re
 import time
 import argparse
-import mutagen
 import requests
 
-from common import has_mbid, AUDIO_EXTS, log, log_verbose, set_log_file, write_tags
+from common import has_mbid, AUDIO_EXTS, log, log_always, log_verbose, set_log_file, set_quiet, set_verbose, write_tags
 
 MB_BASE = "https://musicbrainz.org/ws/2"
 HEADERS = {"User-Agent": "music-tagger/1.0 (https://github.com/user/music-tagger)"}
@@ -139,7 +138,7 @@ def process_album(artist_folder, album_folder, files, artist_map):
     if not clean_name:
         return 0, "skip"
 
-    artist_info = artist_map.get(artist_folder)
+    artist_info = artist_map.get(artist_folder, [artist_folder])
     if not artist_info:
         return 0, "unknown_artist"
 
@@ -204,17 +203,33 @@ def process_album(artist_folder, album_folder, files, artist_map):
 
 def collect_files(music_root):
     """扫描目录，收集所有没有 MBID 的音频文件"""
-    albums = []  # [(artist_dir, album_dir, [file_paths])]
-    for artist_dir in sorted(os.listdir(music_root)):
+    albums = []
+    try:
+        artist_dirs = sorted(os.listdir(music_root))
+    except PermissionError:
+        log(f"警告: 无权限读取 {music_root}")
+        return albums
+
+    for artist_dir in artist_dirs:
         artist_path = os.path.join(music_root, artist_dir)
         if not os.path.isdir(artist_path) or artist_dir.startswith("_"):
             continue
-        for album_dir in sorted(os.listdir(artist_path)):
+        try:
+            album_dirs = sorted(os.listdir(artist_path))
+        except PermissionError:
+            log(f"警告: 无权限读取 {artist_path}")
+            continue
+        for album_dir in album_dirs:
             album_path = os.path.join(artist_path, album_dir)
             if not os.path.isdir(album_path):
                 continue
+            try:
+                fnames = os.listdir(album_path)
+            except PermissionError:
+                log(f"警告: 无权限读取 {album_path}")
+                continue
             files = []
-            for fname in os.listdir(album_path):
+            for fname in fnames:
                 if fname.lower().endswith(AUDIO_EXTS):
                     fpath = os.path.join(album_path, fname)
                     if not has_mbid(fpath):
@@ -261,6 +276,8 @@ def main():
     _config["quiet"] = args.quiet
     _config["verbose"] = args.verbose
 
+    set_quiet(args.quiet)
+    set_verbose(args.verbose)
     if args.log_file:
         set_log_file(args.log_file)
 
@@ -313,11 +330,11 @@ def main():
             log(f"  -> MusicBrainz 找不到该歌手")
 
     # 始终输出统计（即使 quiet 模式）
-    print(f"\n{'='*50}", flush=True)
-    print(f"完成!", flush=True)
-    print(f"总文件数: {total_files}", flush=True)
-    print(f"已更新: {updated_total}", flush=True)
-    print(f"成功率: {updated_total * 100 // max(total_files, 1)}%", flush=True)
+    log_always(f"\n{'='*50}")
+    log_always(f"完成!")
+    log_always(f"总文件数: {total_files}")
+    log_always(f"已更新: {updated_total}")
+    log_always(f"成功率: {updated_total * 100 // max(total_files, 1)}%")
 
 
 if __name__ == "__main__":

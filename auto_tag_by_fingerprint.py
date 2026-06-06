@@ -21,8 +21,8 @@ import mutagen
 import requests
 
 from common import (
-    has_mbid, AUDIO_EXTS, log, log_verbose, ProgressBar,
-    load_progress, save_progress, mark_done, set_log_file, write_tags,
+    has_mbid, AUDIO_EXTS, log, log_always, log_verbose, ProgressBar,
+    load_progress, save_progress, mark_done, set_log_file, set_quiet, set_verbose, write_tags,
 )
 
 DEFAULT_ACOUSTID_KEY = "1vOwZtEn"
@@ -59,16 +59,21 @@ def find_fpcalc():
     found = shutil.which("fpcalc")
     if found:
         return found
-    candidates = [
-        os.path.join(os.environ.get("TEMP", ""), "chromaprint-fpcalc-1.5.1-windows-x86_64", "fpcalc.exe"),
+    # 常见安装位置
+    temp = os.environ.get("TEMP", "")
+    for item in os.listdir(temp) if temp else []:
+        if item.startswith("chromaprint-fpcalc") and item.endswith("windows-x86_64"):
+            candidate = os.path.join(temp, item, "fpcalc.exe")
+            if os.path.isfile(candidate):
+                return candidate
+    for candidate in [
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "chromaprint", "fpcalc.exe"),
         "/usr/local/bin/fpcalc",
         "/opt/homebrew/bin/fpcalc",
         "/usr/bin/fpcalc",
-    ]
-    for c in candidates:
-        if os.path.isfile(c):
-            return c
+    ]:
+        if os.path.isfile(candidate):
+            return candidate
     return None
 
 
@@ -208,21 +213,35 @@ def update_tags(filepath, match):
 def _collect_files(music_root, resume_set):
     """扫描目录，收集需要处理的文件"""
     files = []
-    for artist_dir in sorted(os.listdir(music_root)):
+    try:
+        artist_dirs = sorted(os.listdir(music_root))
+    except PermissionError:
+        log(f"警告: 无权限读取 {music_root}")
+        return files
+
+    for artist_dir in artist_dirs:
         artist_path = os.path.join(music_root, artist_dir)
         if not os.path.isdir(artist_path) or artist_dir.startswith("_"):
             continue
-        for album_dir in sorted(os.listdir(artist_path)):
+        try:
+            album_dirs = sorted(os.listdir(artist_path))
+        except PermissionError:
+            log(f"警告: 无权限读取 {artist_path}")
+            continue
+        for album_dir in album_dirs:
             album_path = os.path.join(artist_path, album_dir)
             if not os.path.isdir(album_path):
                 continue
-            for fname in os.listdir(album_path):
+            try:
+                fnames = os.listdir(album_path)
+            except PermissionError:
+                log(f"警告: 无权限读取 {album_path}")
+                continue
+            for fname in fnames:
                 if fname.lower().endswith(AUDIO_EXTS):
                     fpath = os.path.join(album_path, fname)
-                    # 跳过已有 MBID 的文件
                     if has_mbid(fpath):
                         continue
-                    # 断点续跑：跳过已处理的文件
                     if os.path.abspath(fpath) in resume_set:
                         continue
                     files.append((artist_dir, album_dir, fname, fpath))
@@ -254,6 +273,8 @@ def main():
     _config["quiet"] = args.quiet
     _config["verbose"] = args.verbose
 
+    set_quiet(args.quiet)
+    set_verbose(args.verbose)
     if args.log_file:
         set_log_file(args.log_file)
 
@@ -271,11 +292,12 @@ def main():
 
     _config["fpcalc"] = fpcalc_path
 
-    # 验证 fpcalc 可用
-    test_result = subprocess.run(
-        [fpcalc_path, "-version"], capture_output=True, timeout=10
-    )
-    if test_result.returncode != 0:
+    # 验证 fpcalc 可用（不检查退出码，只检查能否执行）
+    try:
+        subprocess.run(
+            [fpcalc_path, "-version"], capture_output=True, timeout=10
+        )
+    except FileNotFoundError:
         log(f"错误: fpcalc 无法运行: {fpcalc_path}")
         sys.exit(1)
 
@@ -334,8 +356,8 @@ def main():
 
     progress.finish()
 
-    count = progress.matched if not args.dry_run else progress.matched
-    print(f"成功率: {count * 100 // max(total, 1)}%", flush=True)
+    count = progress.matched
+    log_always(f"成功率: {count * 100 // max(total, 1)}%")
 
 
 if __name__ == "__main__":

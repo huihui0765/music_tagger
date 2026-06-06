@@ -24,7 +24,7 @@ from collections import defaultdict
 
 import mutagen
 
-from common import AUDIO_EXTS, log, log_verbose, set_log_file, write_tags
+from common import AUDIO_EXTS, log, log_always, log_verbose, set_log_file, set_quiet, set_verbose, write_tags, sanitize_filename
 
 # 全局配置
 _config = {"dry_run": False, "quiet": False, "verbose": False, "noise_dir": ""}
@@ -35,7 +35,7 @@ def _in_noise_dir(dirpath):
     noise = _config.get("noise_dir", "")
     if not noise:
         return False
-    return os.path.abspath(dirpath).startswith(noise)
+    return os.path.abspath(dirpath).startswith(noise + os.sep)
 
 
 # ==================== 1. 去重保高音质 ====================
@@ -283,7 +283,7 @@ def embed_covers(root):
                 has_cover = False
                 if isinstance(af, mutagen.flac.FLAC):
                     has_cover = any(p.type == 3 for p in af.pictures)
-                elif isinstance(af, mutagen.id3.ID3):
+                elif isinstance(af, mutagen.mp3.MP3):
                     has_cover = any(k.startswith("APIC") for k in af.tags) if af.tags else False
                 elif isinstance(af, mutagen.mp4.MP4):
                     has_cover = "covr" in af.tags if af.tags else False
@@ -308,9 +308,7 @@ def embed_covers(root):
 
 # ==================== 5. 文件整理 ====================
 
-def sanitize(name):
-    """清理文件名中的非法字符"""
-    return re.sub(r'[<>:"/\\|?*]', '', name).strip()
+sanitize = sanitize_filename
 
 
 def organize_files(root):
@@ -414,6 +412,8 @@ def main():
     _config["verbose"] = args.verbose
     _config["noise_dir"] = noise_dir
 
+    set_quiet(args.quiet)
+    set_verbose(args.verbose)
     if args.log_file:
         set_log_file(args.log_file)
 
@@ -443,11 +443,11 @@ def main():
             stats[name] = fn()
 
     # 汇总（始终输出）
-    print(f"\n{'=' * 50}", flush=True)
-    print(f"  完成!", flush=True)
+    log_always(f"\n{'=' * 50}")
+    log_always(f"  完成!")
     for name, count in stats.items():
-        print(f"  {name}: {count}", flush=True)
-    print(f"{'=' * 50}", flush=True)
+        log_always(f"  {name}: {count}")
+    log_always(f"{'=' * 50}")
 
 
 if __name__ == "__main__":

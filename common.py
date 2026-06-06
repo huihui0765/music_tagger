@@ -18,6 +18,8 @@ AUDIO_EXTS = (".flac", ".mp3", ".m4a")
 # ==================== 日志 ====================
 
 _log_file = None
+_quiet = False
+_verbose = False
 
 
 def set_log_file(path):
@@ -28,15 +30,34 @@ def set_log_file(path):
         _log_file = open(path, "w", encoding="utf-8")
 
 
+def set_quiet(q):
+    global _quiet
+    _quiet = q
+
+
+def set_verbose(v):
+    global _verbose
+    _verbose = v
+
+
 def log(msg):
+    if not _quiet:
+        print(msg, flush=True)
+    if _log_file:
+        _log_file.write(msg + "\n")
+        _log_file.flush()
+
+
+def log_always(msg):
+    """始终输出（忽略 quiet 模式），用于最终统计"""
     print(msg, flush=True)
     if _log_file:
         _log_file.write(msg + "\n")
         _log_file.flush()
 
 
-def log_verbose(msg, verbose=False):
-    if verbose:
+def log_verbose(msg):
+    if _verbose:
         log(msg)
 
 
@@ -138,6 +159,13 @@ def merge_args(config, args):
     return result
 
 
+# ==================== 文件工具 ====================
+
+def sanitize_filename(name):
+    """清理文件名中的非法字符"""
+    return re.sub(r'[<>:"/\\|?*]', '', name).strip()
+
+
 # ==================== 音频工具 ====================
 
 def has_mbid(filepath):
@@ -155,46 +183,6 @@ def has_mbid(filepath):
     except Exception:
         pass
     return False
-
-
-def collect_files(music_root, filter_mbid=True):
-    """扫描目录，收集音频文件。filter_mbid=True 时只收集没有 MBID 的。"""
-    files = []
-    try:
-        artist_dirs = sorted(os.listdir(music_root))
-    except PermissionError:
-        log(f"警告: 无权限读取 {music_root}")
-        return files
-
-    for artist_dir in artist_dirs:
-        artist_path = os.path.join(music_root, artist_dir)
-        if not os.path.isdir(artist_path) or artist_dir.startswith("_"):
-            continue
-        try:
-            album_dirs = sorted(os.listdir(artist_path))
-        except PermissionError:
-            log(f"警告: 无权限读取 {artist_path}")
-            continue
-        for album_dir in album_dirs:
-            album_path = os.path.join(artist_path, album_dir)
-            if not os.path.isdir(album_path):
-                continue
-            try:
-                fnames = os.listdir(album_path)
-            except PermissionError:
-                log(f"警告: 无权限读取 {album_path}")
-                continue
-            for fname in fnames:
-                if fname.lower().endswith(AUDIO_EXTS):
-                    fpath = os.path.join(album_path, fname)
-                    if not filter_mbid or not has_mbid(fpath):
-                        files.append((artist_dir, album_dir, fname, fpath))
-    return files
-
-
-def sanitize_filename(name):
-    """清理文件名中的非法字符"""
-    return re.sub(r'[<>:"/\\|?*]', '', name).strip()
 
 
 # ==================== 标签写入 ====================
