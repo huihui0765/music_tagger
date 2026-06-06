@@ -28,20 +28,10 @@ from mutagen.id3 import ID3, APIC, TIT2, TPE1, TALB, TDRC, TRCK, TXXX
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Tags
 
-from common import AUDIO_EXTS
+from common import AUDIO_EXTS, log, log_verbose, set_log_file
 
 # 全局配置
 _config = {"dry_run": False, "quiet": False, "verbose": False, "noise_dir": ""}
-
-
-def log(msg):
-    if not _config.get("quiet"):
-        print(msg, flush=True)
-
-
-def log_verbose(msg):
-    if _config.get("verbose"):
-        print(msg, flush=True)
 
 
 def _in_noise_dir(dirpath):
@@ -436,6 +426,7 @@ def main():
         "--verbose", action="store_true",
         help="详细模式：输出每一步的调试信息"
     )
+    parser.add_argument("--log-file", help="日志输出文件")
     args = parser.parse_args()
 
     root = os.path.abspath(args.music_root)
@@ -449,6 +440,9 @@ def main():
     _config["quiet"] = args.quiet
     _config["verbose"] = args.verbose
     _config["noise_dir"] = noise_dir
+
+    if args.log_file:
+        set_log_file(args.log_file)
 
     log("=" * 50)
     log("  Music Organizer")

@@ -4,13 +4,13 @@ run.py — 一键运行音乐整理全流程
 流程:
     1. 按歌手名匹配标签 (auto_tag_by_name)
     2. 按声纹匹配标签 (auto_tag_by_fingerprint)
-    3. 整理音乐库 (organizer)
+    3. 整理音乐库 (auto_organize)
 
 用法:
     python run.py /path/to/music
-    python run.py /path/to/music --skip-tag
-    python run.py /path/to/music --skip-fingerprint
+    python run.py /path/to/music --resume
     python run.py /path/to/music --dry-run
+    python run.py /path/to/music --skip-fingerprint
 """
 
 import sys
@@ -18,8 +18,10 @@ import os
 import argparse
 import time
 
+from common import _fmt_time
 
-def log(msg):
+
+def section(msg):
     print(f"\n{'='*50}", flush=True)
     print(f"  {msg}", flush=True)
     print(f"{'='*50}", flush=True)
@@ -31,13 +33,13 @@ def run_step(name, script_name, args_list):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     script_path = os.path.join(script_dir, script_name)
     cmd = [sys.executable, script_path] + args_list
-    log(f"开始: {name}")
+    section(f"开始: {name}")
     print(f"  命令: {' '.join(cmd)}", flush=True)
     start = time.time()
     result = subprocess.run(cmd, cwd=script_dir)
     elapsed = time.time() - start
     status = "成功" if result.returncode == 0 else f"失败 (exit code {result.returncode})"
-    print(f"\n  {name}: {status} ({elapsed:.0f}秒)", flush=True)
+    print(f"\n  {name}: {status} ({_fmt_time(elapsed)})", flush=True)
     return result.returncode == 0
 
 
@@ -50,12 +52,14 @@ def main():
     parser.add_argument("--fpcalc", help="fpcalc 可执行文件路径")
     parser.add_argument("--acoustid-key", help="AcoustID API key")
     parser.add_argument("--workers", type=int, default=4, help="声纹识别线程数")
+    parser.add_argument("--resume", action="store_true", help="声纹识别断点续跑")
     parser.add_argument("--skip-tag", action="store_true", help="跳过按歌手名匹配")
     parser.add_argument("--skip-fingerprint", action="store_true", help="跳过声纹识别")
     parser.add_argument("--skip-organize", action="store_true", help="跳过文件整理")
     parser.add_argument("--dry-run", action="store_true", help="试运行")
     parser.add_argument("--quiet", action="store_true", help="安静模式")
     parser.add_argument("--verbose", action="store_true", help="详细模式")
+    parser.add_argument("--log-file", help="日志输出文件")
     args = parser.parse_args()
 
     music_root = os.path.abspath(args.music_root)
@@ -74,6 +78,8 @@ def main():
         common_args.append("--quiet")
     if args.verbose:
         common_args.append("--verbose")
+    if args.log_file:
+        common_args += ["--log-file", args.log_file]
 
     # 步骤 1: 按歌手名匹配
     if not args.skip_tag:
@@ -95,6 +101,8 @@ def main():
         if args.acoustid_key:
             fp_args += ["--acoustid-key", args.acoustid_key]
         fp_args += ["--workers", str(args.workers)]
+        if args.resume:
+            fp_args.append("--resume")
         ok = run_step("声纹识别匹配标签", "auto_tag_by_fingerprint.py", fp_args)
         results["声纹识别"] = ok
         if not ok:
@@ -114,10 +122,10 @@ def main():
 
     # 汇总
     total_elapsed = time.time() - total_start
-    print(f"\n{'='*50}", flush=True)
-    print(f"  全部完成! 总耗时: {total_elapsed:.0f}秒", flush=True)
+    section("全部完成!")
+    print(f"  总耗时: {_fmt_time(total_elapsed)}", flush=True)
     for step, ok in results.items():
-        status = "OK" if ok else "FAILED"
+        status = "✓ OK" if ok else "✗ FAILED"
         print(f"  {step}: {status}", flush=True)
     print(f"{'='*50}", flush=True)
 

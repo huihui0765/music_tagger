@@ -19,7 +19,7 @@ from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Tags
 import requests
 
-from common import has_mbid, AUDIO_EXTS
+from common import has_mbid, AUDIO_EXTS, log, log_verbose, set_log_file
 
 MB_BASE = "https://musicbrainz.org/ws/2"
 HEADERS = {"User-Agent": "music-tagger/1.0 (https://github.com/user/music-tagger)"}
@@ -27,16 +27,6 @@ RATE_LIMIT = 1.1
 
 # 全局配置，由 main() 设置
 _config = {"dry_run": False, "quiet": False, "verbose": False}
-
-
-def log(msg):
-    if not _config.get("quiet"):
-        print(msg, flush=True)
-
-
-def log_verbose(msg):
-    if _config.get("verbose"):
-        print(msg, flush=True)
 
 
 def load_artist_map(path):
@@ -330,6 +320,7 @@ def main():
         "--verbose", action="store_true",
         help="详细模式：输出 MusicBrainz 查询等调试信息"
     )
+    parser.add_argument("--log-file", help="日志输出文件")
     args = parser.parse_args()
 
     music_root = args.music_root
@@ -340,6 +331,9 @@ def main():
     _config["dry_run"] = args.dry_run
     _config["quiet"] = args.quiet
     _config["verbose"] = args.verbose
+
+    if args.log_file:
+        set_log_file(args.log_file)
 
     if args.dry_run:
         log("[DRY-RUN 模式] 不会写入任何标签")

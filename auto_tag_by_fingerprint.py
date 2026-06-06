@@ -4,12 +4,11 @@ auto_tag_by_fingerprint.py — 用声纹识别匹配音乐标签
 用法:
     python auto_tag_by_fingerprint.py /path/to/music
     python auto_tag_by_fingerprint.py /path/to/music --fpcalc /path/to/fpcalc
-    python auto_tag_by_fingerprint.py /path/to/music --acoustid-key YOUR_KEY --workers 8
+    python auto_tag_by_fingerprint.py /path/to/music --resume
 """
 
 import sys
 import os
-import re
 import time
 import json
 import argparse
@@ -25,32 +24,29 @@ from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Tags
 import requests
 
-from common import has_mbid, AUDIO_EXTS
+from common import (
+    has_mbid, AUDIO_EXTS, log, log_verbose, ProgressBar,
+    load_progress, save_progress, mark_done, set_log_file,
+)
 
 DEFAULT_ACOUSTID_KEY = "1vOwZtEn"
 MB_BASE = "https://musicbrainz.org/ws/2"
-HEADERS = {"User-Agent": "music-tagger/1.0 (https://github.com/user/music-tagger)"}
+HEADERS = {"User-Agent": "music-tagger/1.0 (https://github.com/huihui0765/music_tagger)"}
+PROGRESS_FILE = ".fingerprint_progress.json"
 
-# 全局配置，由 main() 设置
-_config = {"fpcalc": "fpcalc", "acoustid_key": DEFAULT_ACOUSTID_KEY, "dry_run": False, "quiet": False, "verbose": False}
+# 全局配置
+_config = {
+    "fpcalc": "fpcalc", "acoustid_key": DEFAULT_ACOUSTID_KEY,
+    "dry_run": False, "quiet": False, "verbose": False,
+}
 
-# Rate limiter: 在锁内只记录时间，不在锁内 sleep
+# Rate limiter
 _rate_lock = threading.Lock()
 _request_times = []
 
 
-def log(msg):
-    if not _config.get("quiet"):
-        print(msg, flush=True)
-
-
-def log_verbose(msg):
-    if _config.get("verbose"):
-        print(msg, flush=True)
-
-
 def rate_limit(max_per_sec=3):
-    """确保请求不超过 max_per_sec 次/秒。锁内完成检查、等待、记录。"""
+    """确保请求不超过 max_per_sec 次/秒"""
     with _rate_lock:
         now = time.time()
         while _request_times and _request_times[0] < now - 1.0:
@@ -63,11 +59,10 @@ def rate_limit(max_per_sec=3):
 
 
 def find_fpcalc():
-    """自动查找 fpcalc 可执行文件"""
+    """自动查找 fpcalc"""
     found = shutil.which("fpcalc")
     if found:
         return found
-
     candidates = [
         os.path.join(os.environ.get("TEMP", ""), "chromaprint-fpcalc-1.5.1-windows-x86_64", "fpcalc.exe"),
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "chromaprint", "fpcalc.exe"),
@@ -82,7 +77,7 @@ def find_fpcalc():
 
 
 def get_fingerprint(filepath):
-    """用 fpcalc 生成音频指纹。失败返回 (None, None)，fpcalc 缺失抛出异常。"""
+    """用 fpcalc 生成音频指纹"""
     try:
         result = subprocess.run(
             [_config["fpcalc"], "-json", "-length", "120", filepath],
@@ -93,9 +88,7 @@ def get_fingerprint(filepath):
             data = json.loads(result.stdout)
             return data.get("duration"), data.get("fingerprint")
     except FileNotFoundError:
-        raise RuntimeError(
-            "找不到 fpcalc，请用 --fpcalc 指定路径或安装 chromaprint"
-        )
+        raise RuntimeError("找不到 fpcalc，请用 --fpcalc 指定路径或安装 chromaprint")
     except subprocess.TimeoutExpired:
         pass
     except Exception as e:
@@ -129,11 +122,6 @@ def _acoustid_post(duration, fingerprint, retries=3):
             if attempt < retries - 1:
                 time.sleep(2)
     return []
-
-
-def lookup_acoustid(duration, fingerprint):
-    """查询 AcoustID"""
-    return _acoustid_post(duration, fingerprint)
 
 
 def _mb_get(url, params, retries=3):
@@ -172,7 +160,6 @@ def get_best_match(results):
                     "release": releases[0],
                     "score": r.get("score"),
                 }
-    # 降级：接受没有 release 信息的匹配
     for r in results:
         if r.get("score", 0) < 0.3:
             continue
@@ -190,7 +177,6 @@ def get_best_match(results):
     return None
 
 
-
 def _get_track_number_from_mb(release_id, recording_id):
     """从 MusicBrainz 获取曲目号"""
     data = _mb_get(f"{MB_BASE}/release/{release_id}", {
@@ -205,7 +191,7 @@ def _get_track_number_from_mb(release_id, recording_id):
 
 
 def update_tags(filepath, match):
-    """写入标签。支持 .flac / .mp3 / .m4a"""
+    """写入标签"""
     ext = os.path.splitext(filepath)[1].lower()
     title = match.get("recording_title", "")
     artist = ", ".join(a.get("name", "") for a in match.get("artists", []))
@@ -253,7 +239,6 @@ def update_tags(filepath, match):
             if track_num:
                 audio.tags.delall("TRCK")
                 audio.tags.add(TRCK(encoding=3, text=track_num))
-            # MusicBrainz ID 写入 TXXX 帧
             if match.get("recording_id"):
                 audio.tags.delall("TXXX:MusicBrainz Track Id")
                 audio.tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=match["recording_id"]))
@@ -283,7 +268,6 @@ def update_tags(filepath, match):
             audio.save()
 
         else:
-            log(f"  不支持的格式: {ext}")
             return False
 
         return True
@@ -292,43 +276,8 @@ def update_tags(filepath, match):
         return False
 
 
-def process_one(args):
-    """处理单个文件"""
-    i, total, artist_dir, album_dir, fname, fpath = args
-    label = f"[{i+1}/{total}]"
-
-    duration, fp = get_fingerprint(fpath)
-    if not fp:
-        return ("skip", f"{label} {artist_dir}/{fname} - 指纹生成失败")
-
-    log_verbose(f"  {label} 指纹长度: {len(fp)}, 时长: {duration}s")
-
-    results = lookup_acoustid(duration, fp)
-    if not results:
-        return ("fail", f"{label} {artist_dir}/{fname} - 未匹配")
-
-    log_verbose(f"  {label} AcoustID 返回 {len(results)} 个结果")
-
-    match = get_best_match(results)
-    if not match:
-        return ("fail", f"{label} {artist_dir}/{fname} - 置信度太低")
-
-    score = match.get("score", 0)
-    title = match.get("recording_title", "?")
-    artist = ", ".join(a.get("name", "") for a in match.get("artists", []))
-    album = match.get("release", {}).get("title", "?")
-
-    if _config.get("dry_run"):
-        return ("dry-run", f"{label} {artist_dir}/{fname} -> ({score:.0%}) {artist} - {title} [{album}] [DRY-RUN]")
-
-    if update_tags(fpath, match):
-        return ("match", f"{label} {artist_dir}/{fname} -> ({score:.0%}) {artist} - {title}")
-    else:
-        return ("fail", f"{label} {artist_dir}/{fname} - 标签写入失败")
-
-
-def collect_files(music_root):
-    """扫描目录，收集所有没有 MBID 的音频文件"""
+def _collect_files(music_root, resume_set):
+    """扫描目录，收集需要处理的文件"""
     files = []
     for artist_dir in sorted(os.listdir(music_root)):
         artist_path = os.path.join(music_root, artist_dir)
@@ -341,8 +290,13 @@ def collect_files(music_root):
             for fname in os.listdir(album_path):
                 if fname.lower().endswith(AUDIO_EXTS):
                     fpath = os.path.join(album_path, fname)
-                    if not has_mbid(fpath):
-                        files.append((artist_dir, album_dir, fname, fpath))
+                    # 跳过已有 MBID 的文件
+                    if has_mbid(fpath):
+                        continue
+                    # 断点续跑：跳过已处理的文件
+                    if os.path.abspath(fpath) in resume_set:
+                        continue
+                    files.append((artist_dir, album_dir, fname, fpath))
     return files
 
 
@@ -351,42 +305,34 @@ def main():
         description="用声纹识别 (AcoustID) 匹配音乐标签"
     )
     parser.add_argument("music_root", help="音乐目录路径")
-    parser.add_argument(
-        "--fpcalc", dest="fpcalc",
-        help="fpcalc 可执行文件路径（不指定则自动查找）"
-    )
-    parser.add_argument(
-        "--acoustid-key", dest="acoustid_key", default=DEFAULT_ACOUSTID_KEY,
-        help="AcoustID API key（默认使用 beets 公共 key）"
-    )
-    parser.add_argument(
-        "--workers", type=int, default=4,
-        help="并行线程数（默认 4，注意 AcoustID 限流 3 次/秒）"
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="试运行：只输出匹配结果，不写入标签"
-    )
-    parser.add_argument(
-        "--quiet", action="store_true",
-        help="安静模式：只输出最终统计"
-    )
-    parser.add_argument(
-        "--verbose", action="store_true",
-        help="详细模式：输出 API 请求等调试信息"
-    )
+    parser.add_argument("--fpcalc", help="fpcalc 可执行文件路径")
+    parser.add_argument("--acoustid-key", default=DEFAULT_ACOUSTID_KEY, help="AcoustID API key")
+    parser.add_argument("--workers", type=int, default=4, help="并行线程数")
+    parser.add_argument("--resume", action="store_true", help="断点续跑：跳过上次已处理的文件")
+    parser.add_argument("--dry-run", action="store_true", help="试运行")
+    parser.add_argument("--quiet", action="store_true", help="安静模式")
+    parser.add_argument("--verbose", action="store_true", help="详细模式")
+    parser.add_argument("--log-file", help="日志输出文件")
     args = parser.parse_args()
 
     music_root = args.music_root
     if not os.path.isdir(music_root):
-        log(f"错误: 目录不存在: {music_root}")
+        print(f"错误: 目录不存在: {music_root}", flush=True)
         sys.exit(1)
+
+    _config["acoustid_key"] = args.acoustid_key
+    _config["dry_run"] = args.dry_run
+    _config["quiet"] = args.quiet
+    _config["verbose"] = args.verbose
+
+    if args.log_file:
+        set_log_file(args.log_file)
 
     # 查找 fpcalc
     fpcalc_path = args.fpcalc or find_fpcalc()
     if not fpcalc_path:
         log("错误: 找不到 fpcalc。请用 --fpcalc 指定路径，或安装 chromaprint:")
-        log("  Windows: 从 https://github.com/acoustid/chromaprint/releases 下载")
+        log("  Windows: https://github.com/acoustid/chromaprint/releases")
         log("  macOS:   brew install chromaprint")
         log("  Linux:   apt install libchromaprint-tools")
         sys.exit(1)
@@ -395,29 +341,33 @@ def main():
         sys.exit(1)
 
     _config["fpcalc"] = fpcalc_path
-    _config["acoustid_key"] = args.acoustid_key
-    _config["dry_run"] = args.dry_run
-    _config["quiet"] = args.quiet
-    _config["verbose"] = args.verbose
+
+    # 验证 fpcalc 可用
+    test_result = subprocess.run(
+        [fpcalc_path, "-version"], capture_output=True, timeout=10
+    )
+    if test_result.returncode != 0:
+        log(f"错误: fpcalc 无法运行: {fpcalc_path}")
+        sys.exit(1)
 
     if args.dry_run:
         log("[DRY-RUN 模式] 不会写入任何标签")
     log(f"fpcalc: {fpcalc_path}")
     log(f"线程数: {args.workers}")
 
-    # 启动前验证 fpcalc 可用
-    test_result = subprocess.run(
-        [_config["fpcalc"], "-version"],
-        capture_output=True, timeout=10
-    )
-    if test_result.returncode != 0:
-        print(f"错误: fpcalc 无法运行: {fpcalc_path}", flush=True)
-        sys.exit(1)
+    # 断点续跑
+    progress_path = os.path.join(music_root, PROGRESS_FILE)
+    resume_set = set()
+    if args.resume:
+        resume_set = load_progress(progress_path)
+        if resume_set:
+            log(f"断点续跑: 上次已处理 {len(resume_set)} 个文件，将跳过")
 
-    files = collect_files(music_root)
+    # 扫描文件
+    files = _collect_files(music_root, resume_set)
     total = len(files)
     if total == 0:
-        log("没有找到需要处理的文件（所有文件已有 MusicBrainz 标签）")
+        log("没有找到需要处理的文件")
         return
 
     est_sec = total * 0.5 / args.workers
@@ -425,45 +375,37 @@ def main():
     log(f"预估时间: {est_sec / 60:.0f} 分钟")
     log("")
 
-    matched = 0
-    failed = 0
-    skipped = 0
-    dry_run = 0
+    progress = ProgressBar(total, desc="声纹识别", quiet=args.quiet)
 
     tasks = [(i, total, a, al, f, fp) for i, (a, al, f, fp) in enumerate(files)]
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {executor.submit(process_one, t): t for t in tasks}
         for future in as_completed(futures):
+            task_info = futures[future]
+            fpath = task_info[5]  # filepath
             try:
                 status, msg = future.result()
-                log(msg)
                 if status == "match":
-                    matched += 1
+                    progress.update("match")
+                    mark_done(progress_path, resume_set, fpath)
                 elif status == "dry-run":
-                    dry_run += 1
+                    progress.update("match")
                 elif status == "skip":
-                    skipped += 1
+                    progress.update("skip")
                 else:
-                    failed += 1
+                    progress.update("fail")
+                    mark_done(progress_path, resume_set, fpath)
             except RuntimeError as e:
-                print(f"致命错误: {e}", flush=True)
+                print(f"\n致命错误: {e}", flush=True)
                 sys.exit(1)
             except Exception as e:
-                log(f"  错误: {e}")
-                failed += 1
+                progress.update("fail")
+                mark_done(progress_path, resume_set, fpath)
 
-    # 始终输出统计（即使 quiet 模式）
-    print(f"\n{'='*50}", flush=True)
-    print(f"完成!", flush=True)
-    print(f"总文件数: {total}", flush=True)
-    if args.dry_run:
-        print(f"可匹配: {dry_run}", flush=True)
-    else:
-        print(f"已匹配: {matched}", flush=True)
-    print(f"未匹配: {failed}", flush=True)
-    print(f"跳过: {skipped}", flush=True)
-    count = dry_run if args.dry_run else matched
+    progress.finish()
+
+    count = progress.matched if not args.dry_run else progress.matched
     print(f"成功率: {count * 100 // max(total, 1)}%", flush=True)
 
 

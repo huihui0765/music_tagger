@@ -112,6 +112,39 @@ python auto_organize.py /path/to/music --dry-run       # 试运行
 | `--dry-run` | 试运行，只看不改 |
 | `--quiet` | 安静模式，只输出统计 |
 | `--verbose` | 详细模式，输出调试信息 |
+| `--log-file FILE` | 日志输出到文件 |
+
+## 进度条
+
+脚本运行时会显示实时进度条：
+
+```text
+  声纹识别 |████████████░░░░░░░░░░░░░░| 1200/3021 (39%) ✓1050 ✗120 ⏭30 ETA 12:30
+```
+
+- `✓` 匹配成功
+- `✗` 匹配失败
+- `⏭` 跳过（已有标签/指纹失败）
+- `ETA` 预估剩余时间
+
+## 断点续跑
+
+声纹识别跑到一半断了？用 `--resume` 接着来：
+
+```bash
+# 第一次跑（中断了）
+python auto_tag_by_fingerprint.py /path/to/music
+
+# 接着跑（跳过已处理的文件）
+python auto_tag_by_fingerprint.py /path/to/music --resume
+```
+
+进度文件保存在音乐目录下的 `.fingerprint_progress.json`。
+
+```bash
+# 用 run.py 也可以
+python run.py /path/to/music --resume
+```
 
 ## 歌手名映射
 
